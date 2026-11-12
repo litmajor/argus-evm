@@ -1,0 +1,23 @@
+[package]
+name = "argus-executor"
+version.workspace = true
+edition.workspace = true
+description = "Bundle submission + JSONL telemetry (SSA Action Surface)"
+
+[dependencies]
+argus-types = { workspace = true }
+alloy = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-provider = { workspace = true }
+alloy-network = { workspace = true }
+alloy-signer-local = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+hex = { workspace = true }
+parking_lot = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

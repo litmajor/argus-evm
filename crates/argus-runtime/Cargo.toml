@@ -1,0 +1,24 @@
+[package]
+name = "argus-runtime"
+version.workspace = true
+edition.workspace = true
+description = "argus-evm binary — SSA Runtime orchestration"
+
+[[bin]]
+name = "argus-evm"
+path = "src/main.rs"
+
+[dependencies]
+argus-types = { workspace = true }
+argus-ingestor = { workspace = true }
+argus-state = { workspace = true }
+argus-sim = { workspace = true }
+argus-executor = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }

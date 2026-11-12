@@ -1,0 +1,12 @@
+/target
+/Cargo.lock
+telemetry/
+*.jsonl
+.env
+contracts/out
+contracts/cache
+contracts/lib
+.idea
+.vscode
+*.swp
+.DS_Store

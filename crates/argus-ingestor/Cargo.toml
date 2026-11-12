@@ -1,0 +1,24 @@
+[package]
+name = "argus-ingestor"
+version.workspace = true
+edition.workspace = true
+description = "Alloy WebSocket ingestor — SSA Collector layer for EVM events"
+
+[dependencies]
+argus-types = { workspace = true }
+alloy = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-provider = { workspace = true }
+alloy-rpc-types = { workspace = true }
+alloy-sol-types = { workspace = true }
+alloy-transport-ws = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+eyre = { workspace = true }

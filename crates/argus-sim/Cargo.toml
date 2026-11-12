@@ -1,0 +1,23 @@
+[package]
+name = "argus-sim"
+version.workspace = true
+edition.workspace = true
+description = "revm-based in-process liquidation simulator (SSA Domain Engine)"
+
+[dependencies]
+argus-types = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-sol-types = { workspace = true }
+alloy = { workspace = true }
+alloy-provider = { workspace = true }
+revm = { workspace = true }
+revm-primitives = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+hex = { workspace = true }
+async-trait = { workspace = true }

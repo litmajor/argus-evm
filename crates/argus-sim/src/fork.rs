@@ -8,13 +8,11 @@
 //! `preload_storage` or switch the backing DB to `AlloyDB` +
 //! `WrapDatabaseAsync` (lazy RPC on cache miss).
 
-use std::sync::Arc;
-
 use alloy::eips::BlockId;
-use alloy::providers::{Provider, ProviderBuilder, RootProvider};
-use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
+use alloy::providers::{Provider, ProviderBuilder, ReqwestProvider};
+use alloy_primitives::{keccak256, Address, Bytes, B256, U256};
 use argus_types::{ArgusError, Result};
-use revm::database::{CacheDB, EmptyDB};
+use revm::db::{CacheDB, EmptyDB};
 use revm::primitives::{AccountInfo, Bytecode, KECCAK_EMPTY};
 use tracing::{debug, info, warn};
 
@@ -24,7 +22,7 @@ pub struct ForkState {
     pub block_number: u64,
     pub block_hash: B256,
     pub rpc_url: String,
-    provider: Option<RootProvider>,
+    provider: Option<ReqwestProvider>,
 }
 
 impl Default for ForkState {
@@ -55,7 +53,7 @@ impl ForkState {
             return Ok(Self::default());
         }
 
-        let provider = ProviderBuilder::new().connect_http(
+        let provider = ProviderBuilder::new().on_http(
             rpc_url
                 .parse()
                 .map_err(|e| ArgusError::provider(format!("invalid rpc url: {e}")))?,
@@ -74,13 +72,12 @@ impl ForkState {
             }
         };
 
-        let block_hash = provider
-            .get_block_by_number(block_number.into())
+        let block = provider
+            .get_block_by_number(block_number.into(), false.into())
             .await
-            .ok()
-            .flatten()
-            .map(|b| b.header.hash)
-            .unwrap_or(B256::ZERO);
+            .map_err(ArgusError::provider)?
+            .ok_or_else(|| ArgusError::provider("provider did not return the fork tip block"))?;
+        let block_hash = block.header.hash;
 
         info!(block_number, %block_hash, "forked tip via Alloy HTTP");
 
@@ -96,7 +93,7 @@ impl ForkState {
         self.provider.is_some()
     }
 
-    pub fn provider(&self) -> Option<&RootProvider> {
+    pub fn provider(&self) -> Option<&ReqwestProvider> {
         self.provider.as_ref()
     }
 
@@ -105,10 +102,7 @@ impl ForkState {
     /// After this returns, `Evm::transact` hits memory for those accounts.
     /// Storage slots are **not** prefetched here — add via `insert_account_storage`
     /// or back the DB with AlloyDB for lazy slot loads.
-    pub async fn create_forked_db(
-        &self,
-        accounts_to_load: &[Address],
-    ) -> Result<CacheDB<EmptyDB>> {
+    pub async fn create_forked_db(&self, accounts_to_load: &[Address]) -> Result<CacheDB<EmptyDB>> {
         let mut db = CacheDB::new(EmptyDB::default());
 
         let Some(provider) = &self.provider else {
@@ -198,7 +192,7 @@ pub struct ForkOverlay {
 
 /// Fetch balance + nonce + code for one account at `block`.
 pub async fn load_account(
-    provider: &RootProvider,
+    provider: &ReqwestProvider,
     address: Address,
     block: BlockId,
 ) -> Result<AccountInfo> {
@@ -239,20 +233,18 @@ pub async fn load_account(
 /// Standard account set for a liquidation sim.
 pub fn liquidation_accounts(
     liquidator: Address,
-    flash_lender: Address,
     borrower: Address,
     loan_token: Address,
     collateral_token: Address,
-    vault: Address,
+    morpho: Address,
     caller: Address,
 ) -> Vec<Address> {
     let mut addrs = vec![
         liquidator,
-        flash_lender,
         borrower,
         loan_token,
         collateral_token,
-        vault,
+        morpho,
         caller,
     ];
     addrs.sort();

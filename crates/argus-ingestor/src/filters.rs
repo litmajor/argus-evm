@@ -1,7 +1,7 @@
 //! Log filter construction for Morpho Blue + Euler v2.
 
 use alloy_primitives::Address;
-use alloy_rpc_types::{Filter, FilterSet, Topic};
+use alloy_rpc_types::{Filter, Topic};
 
 /// Build a combined filter for all protocol contracts of interest.
 /// Topic0 is left open so we decode by signature inside the decoder.
@@ -13,7 +13,7 @@ pub fn build_protocol_filter(
     addresses.extend_from_slice(morpho);
     addresses.extend_from_slice(euler);
 
-    Filter::new().address(FilterSet::from(addresses))
+    Filter::new().address(addresses)
 }
 
 /// Helper: single-address filter with specific topic0 (event signature).

@@ -5,15 +5,15 @@
 //! telemetry for every attempt.
 
 pub mod config;
+pub mod receipt;
 pub mod submitter;
 pub mod telemetry;
-pub mod receipt;
 
 use argus_types::{Result, SimulationResult};
 use tokio::sync::{mpsc, watch};
 use tracing::info;
 
-pub use config::ExecutorConfig;
+pub use config::{ExecutorConfig, SubmitMode};
 pub use submitter::BundleSubmitter;
 pub use telemetry::JsonlTelemetry;
 
@@ -52,8 +52,8 @@ pub fn spawn(
                             match submitter.submit(&sim).await {
                                 Ok(mut outcome) => {
                                     if wait_receipt && outcome.tx_hash.is_some() {
-                                        match poller.wait_for_receipt(outcome).await {
-                                            Ok(confirmed) => outcome = confirmed,
+                                        match poller.wait_for_receipt(&mut outcome).await {
+                                            Ok(()) => {}
                                             Err(e) => {
                                                 tracing::warn!(error = %e, "receipt poll failed");
                                             }

@@ -1,16 +1,16 @@
 //! # argus-sim — SSA Simulation Surface
 //!
-//! Embeds `revm` in-process to simulate the atomic path:
-//!   flash-loan → liquidate → DEX swap → repay flash-loan
+//! Embeds `revm` in-process to simulate the atomic Morpho callback path:
+//!   liquidate → swap seized collateral → repay Morpho
 //! against a cloned fork of the latest block state.
 //!
 //! Target: < 2 ms per candidate on hot path.
 
+pub mod alloy_db;
 pub mod config;
-pub mod simulator;
 pub mod fork;
 pub mod morpho_calldata;
-pub mod alloy_db;
+pub mod simulator;
 
 use argus_types::{LiquidationCandidate, Result, SimulationResult};
 use tokio::sync::{mpsc, watch};

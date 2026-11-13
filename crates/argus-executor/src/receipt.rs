@@ -41,12 +41,9 @@ impl ReceiptPoller {
     ///
     /// Returns an updated outcome with `block_number`, `confirmed_at`, and
     /// final `success` based on receipt status.
-    pub async fn wait_for_receipt(
-        &self,
-        mut outcome: ExecutionOutcome,
-    ) -> Result<ExecutionOutcome> {
+    pub async fn wait_for_receipt(&self, outcome: &mut ExecutionOutcome) -> Result<()> {
         let Some(tx_hash) = outcome.tx_hash else {
-            return Ok(outcome);
+            return Ok(());
         };
 
         let deadline = Instant::now() + self.timeout;
@@ -74,9 +71,8 @@ impl ReceiptPoller {
                     outcome.block_number = block_number;
                     outcome.confirmed_at = Some(Utc::now());
                     if !status_ok {
-                        outcome.error = Some(format!(
-                            "tx reverted on-chain (gas_used={gas_used:?})"
-                        ));
+                        outcome.error =
+                            Some(format!("tx reverted on-chain (gas_used={gas_used:?})"));
                     }
 
                     info!(
@@ -86,7 +82,7 @@ impl ReceiptPoller {
                         "receipt confirmed"
                     );
 
-                    return Ok(outcome);
+                    return Ok(());
                 }
                 Ok(None) => {
                     debug!(tx = %tx_hash, "receipt not yet available");
@@ -97,12 +93,9 @@ impl ReceiptPoller {
             }
 
             if Instant::now() >= deadline {
-                outcome.error = Some(format!(
-                    "receipt timeout after {}s",
-                    self.timeout.as_secs()
-                ));
+                outcome.error = Some(format!("receipt timeout after {}s", self.timeout.as_secs()));
                 // Keep success=true if submission itself succeeded — inclusion pending.
-                return Ok(outcome);
+                return Ok(());
             }
 
             tokio::time::sleep(self.interval).await;

@@ -6,20 +6,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::candidate::{CandidateId, LiquidationCandidate};
 
-/// Outcome of a single in-memory revm simulation of the full atomic path:
-/// flash-loan → liquidate → DEX swap → repay flash-loan → profit check.
+/// Outcome of a single in-memory revm simulation of the Morpho liquidation path:
+/// liquidate → swap seized collateral → repay Morpho → profit check.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationResult {
     pub candidate_id: CandidateId,
     pub candidate: LiquidationCandidate,
     pub success: bool,
-    /// Net profit in the flash-loan / base token after fees + gas estimate.
+    /// Net profit in the loan token after the protocol repayment.
     pub net_profit_wei: U256,
     /// Minimum profit threshold that was required.
     pub min_profit: U256,
     pub gas_used: u64,
     /// Estimated L2 gas cost in base-token units.
     pub gas_cost: U256,
+    /// Legacy telemetry field; zero for the Morpho-native callback flow.
     pub flash_loan_fee: U256,
     /// Calldata for `VaultLiquidator.executeLiquidation(...)`.
     pub calldata: Vec<u8>,

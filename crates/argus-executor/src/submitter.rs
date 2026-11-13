@@ -10,11 +10,9 @@
 
 use std::time::Instant;
 
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, Bytes, B256, U256};
 use alloy_signer_local::PrivateKeySigner;
-use argus_types::{
-    ArgusError, ExecutionBundle, ExecutionOutcome, Result, SimulationResult,
-};
+use argus_types::{ArgusError, ExecutionBundle, ExecutionOutcome, Result, SimulationResult};
 use chrono::Utc;
 use serde_json::{json, Value};
 use tracing::{info, warn};
@@ -109,15 +107,9 @@ impl BundleSubmitter {
 
         // 2. Dispatch according to mode
         let rpc_result = match self.config.submit_mode {
-            SubmitMode::FlashbotsBundle => {
-                self.eth_send_bundle(&raw_tx, bundle).await
-            }
-            SubmitMode::PrivateTx => {
-                self.eth_send_private_transaction(&raw_tx).await
-            }
-            SubmitMode::PrivateRpc => {
-                self.eth_send_raw_transaction(&raw_tx).await
-            }
+            SubmitMode::FlashbotsBundle => self.eth_send_bundle(&raw_tx, bundle).await,
+            SubmitMode::PrivateTx => self.eth_send_private_transaction(&raw_tx).await,
+            SubmitMode::PrivateRpc => self.eth_send_raw_transaction(&raw_tx).await,
         };
 
         match rpc_result {
@@ -279,7 +271,10 @@ impl BundleSubmitter {
 
         // Optional Flashbots auth header (signature over body hash).
         if let Some(auth_key) = &self.config.flashbots_auth_key_hex {
-            if let Ok(auth_signer) = auth_key.trim_start_matches("0x").parse::<PrivateKeySigner>() {
+            if let Ok(auth_signer) = auth_key
+                .trim_start_matches("0x")
+                .parse::<PrivateKeySigner>()
+            {
                 let body_hash = alloy_primitives::keccak256(body.to_string().as_bytes());
                 // Header format: {address}:{signature} — simplified; production
                 // uses the exact Flashbots payload signing scheme.

@@ -21,7 +21,7 @@ use tracing::info;
 /// pubsub subscriptions.
 #[derive(Clone)]
 pub struct AlloyProviderHandle {
-    inner: RootProvider,
+    inner: RootProvider<alloy::pubsub::PubSubFrontend>,
 }
 
 impl AlloyProviderHandle {
@@ -52,7 +52,7 @@ impl AlloyProviderHandle {
             .map_err(ArgusError::provider)
     }
 
-    pub fn provider(&self) -> &RootProvider {
+    pub fn provider(&self) -> &RootProvider<alloy::pubsub::PubSubFrontend> {
         &self.inner
     }
 }
@@ -63,7 +63,7 @@ pub async fn connect(ws_url: &str) -> Result<AlloyProviderHandle> {
 
     let ws = WsConnect::new(ws_url);
     let provider = ProviderBuilder::new()
-        .connect_ws(ws)
+        .on_ws(ws)
         .await
         .map_err(ArgusError::provider)?;
 

@@ -21,7 +21,7 @@
 //! Rule: **exactly one** of `seizedAssets` / `repaidShares` must be zero.
 //! We default to seizedAssets > 0, repaidShares = 0 (seize-specified liquidation).
 
-use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
+use alloy_primitives::{keccak256, Address, Bytes, B256, U256};
 use alloy_sol_types::{sol, SolCall, SolValue};
 use argus_types::LiquidationCandidate;
 
@@ -44,11 +44,22 @@ sol! {
             bytes data
         ) external returns (uint256, uint256);
     }
+
+    interface IVaultLiquidator {
+        function executeLiquidation(
+            MarketParams mp,
+            address borrower,
+            uint256 seizedAssets,
+            uint256 repaidShares,
+            uint256 minNetProfit,
+            uint24 poolFee
+        ) external;
+    }
 }
 
-/// Payload embedded in `VaultLiquidator.liquidationData`.
-/// Decoded on-chain and passed straight into `IMorpho.liquidate`.
-#[derive(Clone, Debug)]
+/// Morpho liquidation arguments encoded for direct calls or used to build the
+/// `VaultLiquidator.executeLiquidation` arguments.
+#[derive(Clone)]
 pub struct MorphoLiquidationData {
     pub market_params: MarketParams,
     pub borrower: Address,
@@ -100,8 +111,8 @@ impl MorphoLiquidationData {
         keccak256(encoded)
     }
 
-    /// ABI-encode for `VaultLiquidator.liquidationData`:
-    /// `(MarketParams, address borrower, uint256 seized, uint256 repaidShares, bytes data)`
+    /// ABI-encode the Morpho liquidation arguments as a standalone tuple.
+    /// `VaultLiquidator.executeLiquidation` takes these as separate arguments.
     pub fn encode_liquidation_data(&self) -> Bytes {
         (
             self.market_params.clone(),
@@ -143,5 +154,13 @@ mod tests {
         };
         let id = keccak256(params.abi_encode());
         assert_eq!(id.as_slice().len(), 32);
+    }
+
+    #[test]
+    fn vault_liquidator_selector_matches_solidity_signature() {
+        assert_eq!(
+            IVaultLiquidator::executeLiquidationCall::SELECTOR,
+            [0x12, 0x6c, 0xe0, 0xd9]
+        );
     }
 }

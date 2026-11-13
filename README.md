@@ -6,22 +6,17 @@ Forked from the [Argus](https://github.com/litmajor/argus) **Surface-State Archi
 
 ---
 
-## Status — what works today
+## Status — implementation and integration
 
 | Stage | Status | Notes |
 |-------|--------|--------|
-| **Alloy WS ingest** | ✅ | Real `subscribe_blocks` + `subscribe_logs` via Alloy `RootProvider` |
-| **Domain events** | ✅ | Morpho Blue + Euler v2 `sol!` decoders → `DomainEvent` broadcast |
-| **In-memory state** | ✅ | Markets, positions, oracles in `DashMap`; HF recompute on oracle/borrow |
-| **Morpho share math** | ✅ | Exact `SharesMathLib` (`VIRTUAL_SHARES=1e6`, `toAssetsUp/Down`) |
-| **Morpho LIF curve** | ✅ | `LIF = min(1.15, 1/(β·LLTV+(1−β)))`, β=0.3; **no close factor** (up to 100% debt) |
-| **revm simulation** | ✅ | Live Alloy prefetch → warm `CacheDB` + full `Evm::transact` (zero RPC on hot path) |
-| **VaultLiquidator.sol** | ✅ | Foundry skeleton: `executeLiquidation` → flash-loan → liquidate → profit gate |
-| **Private bundle submit** | ✅ | Sign EIP-1559 + `eth_sendBundle` / `eth_sendPrivateTransaction` / private RPC |
-| **JSONL telemetry** | ✅ | Block / candidate / sim / exec ticks |
-| Receipt polling | ✅ | `eth_getTransactionReceipt` with timeout |
-| Storage-slot AlloyDB / warm CacheDB | ✅ | Prefetch slots + AlloyDB lazy recipe |
-| Exact Morpho `liquidate` calldata | ✅ | `MarketParams` + seize/shares encoding |
+| **Alloy WS ingest** | Implemented | Subscribes to blocks and logs; the runtime currently passes no protocol addresses |
+| **Domain events and state** | Implemented | Decoders and state logic exist; runtime is not configured with markets or positions |
+| **Morpho share math / LIF** | Implemented | Math helpers exist in the state crate |
+| **revm simulation** | Partially integrated | Contract address and signer identity are configured; historical Morpho discovery seeds current liquidatable borrowers |
+| **VaultLiquidator.sol** | Implemented | Uses Morpho's callback flow; it does not use a flash loan |
+| **Executor** | Implemented, unsafe for this dry-run as wired | Defaults to Flashbots bundle submission, not local Anvil submission |
+| **Telemetry / receipt polling** | Implemented | These do not make the current pipeline end-to-end |
 
 ---
 
@@ -106,58 +101,108 @@ HF = (collateral_value × LLTV) / borrow_value     # liquidatable when HF < 1.0
 
 ## Quick start
 
-```bash
-# Prerequisites: Rust 1.80+, Foundry (optional)
+### Windows PowerShell: local Anvil fork smoke test
 
-cd argus-evm
+This builds the contract and runtime, deploys the contract to a local Base fork, scans Morpho borrow events, simulates currently liquidatable positions, and submits eligible transactions only to local Anvil. It does not send transactions to Base itself, but the RPC provider may have request or rate limits.
+
+Prerequisites: Rust/Cargo and Foundry (`forge` and `anvil`) installed and available on `PATH`, plus an RPC URL with Base mainnet fork access.
+
+Open a PowerShell terminal in the repository root. Start the fork in the first terminal:
+
+```powershell
+$env:BASE_RPC_URL = "https://base-mainnet.g.alchemy.com/v2/YOUR_KEY"
+anvil --fork-url $env:BASE_RPC_URL --chain-id 8453
+```
+
+Keep Anvil running. In a second PowerShell terminal, build and deploy to the local node. Use only a private key printed by this local Anvil instance; never use a real wallet key.
+
+```powershell
+Set-Location "C:\path\to\argus-evm"
 cargo build -p argus-runtime
 
-# Run
-export ARGUS_WS_URL=wss://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
-export ARGUS_PRIVATE_KEY=0x...          # executor signer
-export ARGUS_PRIVATE_RPC=https://relay.flashbots.net
-export RUST_LOG=info
+Set-Location ".\contracts"
+forge build
 
-cargo run -p argus-runtime -- --chain-id 1
+$anvilKey = "PASTE_A_PRIVATE_KEY_PRINTED_BY_ANVIL"
+forge create "src/VaultLiquidator.sol:VaultLiquidator" `
+  --rpc-url "http://127.0.0.1:8545" `
+  --private-key $anvilKey `
+  --constructor-args `
+    "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb" `
+    "0x2626664c2603336e57b271c5c0b26f421741e481" `
+    3000
 ```
+
+The constructor takes Morpho, the swap router, and the default Uniswap V3 fee tier (`3000` above). Record the deployed address for `ARGUS_LIQUIDATOR_ADDRESS`.
+
+To run discovery and simulation, return to the repository root and configure both reads and submissions to use Anvil. Replace the placeholders with the deployment address and a recent Base block. Use only a key printed by this local Anvil instance:
+
+```powershell
+Set-Location "C:\path\to\argus-evm"
+$env:ARGUS_WS_URL = "ws://127.0.0.1:8545"
+$env:ARGUS_RPC_URL = "http://127.0.0.1:8545"
+$env:ARGUS_CHAIN_ID = "8453"
+$env:ARGUS_LIQUIDATOR_ADDRESS = "PASTE_LOCAL_DEPLOYMENT_ADDRESS"
+$env:ARGUS_PRIVATE_KEY = $anvilKey
+$env:ARGUS_PRIVATE_RPC = "http://127.0.0.1:8545"
+$env:ARGUS_SUBMIT_MODE = "private_rpc"
+$env:ARGUS_MORPHO_SCAN_FROM_BLOCK = "PASTE_RECENT_BASE_BLOCK"
+$env:RUST_LOG = "info"
+cargo run -p argus-runtime
+```
+
+Stop the runtime with Ctrl+C. Any submitted transaction is sent only to the local Anvil fork. For a no-submit startup smoke test, leave `ARGUS_PRIVATE_KEY` empty and set `ARGUS_SIM_CALLER_ADDRESS` to the local contract owner.
 
 ### Environment
 
 | Variable | Description |
 |----------|-------------|
-| `ARGUS_WS_URL` | WebSocket RPC (ingest) |
-| `ARGUS_CHAIN_ID` | Chain id (default 1) |
-| `ARGUS_PRIVATE_KEY` | Hex private key for signing liquidations |
-| `ARGUS_PRIVATE_RPC` | Builder / private RPC URL |
+| `ARGUS_WS_URL` | WebSocket RPC URL; the runtime derives the HTTP URL by replacing `ws://` with `http://` or `wss://` with `https://` |
+| `ARGUS_RPC_URL` | HTTP RPC URL for historical discovery and fork simulation; optional if derivable from `ARGUS_WS_URL` |
+| `ARGUS_CHAIN_ID` | Chain id (default `1`) |
+| `ARGUS_MORPHO_ADDRESS` | Morpho Blue singleton address (defaults to the canonical Morpho Blue address) |
+| `ARGUS_MORPHO_SCAN_FROM_BLOCK` | First block to scan for Morpho `Borrow` events; requests use 10-block chunks to accommodate restricted RPC tiers. Use a recent block to bound the scan; default `0` is a very long scan |
+| `ARGUS_LIQUIDATOR_ADDRESS` | Required deployed `VaultLiquidator` address |
+| `ARGUS_PRIVATE_KEY` | Signer key; also supplies the simulation caller unless `ARGUS_SIM_CALLER_ADDRESS` is set |
+| `ARGUS_SIM_CALLER_ADDRESS` | Optional simulation caller override; must be the contract owner or an authorized operator |
+| `ARGUS_PRIVATE_RPC` | Submission endpoint. When it is localhost/127.0.0.1 and no mode is set, the runtime selects raw `eth_sendRawTransaction` for Anvil |
+| `ARGUS_SUBMIT_MODE` | Optional explicit mode: `flashbots_bundle`, `private_tx`, or `private_rpc` |
 | `ARGUS_TELEMETRY` | JSONL output path |
 | `RUST_LOG` | Tracing filter |
 
-HTTP fork URL for revm is derived automatically (`wss://` → `https://`).
+The runtime loads `.env` from the current working directory before reading environment variables. PowerShell environment variables also work and take precedence over values loaded from `.env`.
+
+### Current integration limits
+
+- Historical discovery is limited to borrowers with a `Borrow` event at or after `ARGUS_MORPHO_SCAN_FROM_BLOCK`; choose a block no later than the Morpho deployment to include existing borrowers.
+- Historical logs identify borrowers, but the runtime reads each borrower's current position, market totals, and oracle price via `eth_call`. Large history scans can take time and use RPC quota; the 10-block chunks fit the Free-tier limit observed with the configured provider.
+- The runtime performs this historical discovery at startup. The existing live event mirror is not a full on-chain state indexer and does not rescan all known borrowers as oracle prices change.
+- Simulations pin a live RPC fork block and lazily read contract code and storage through the provider-backed revm database. They fail closed when live state is unavailable and only report success when the deployed liquidator emits its `LiquidationExecuted` profit event; estimates alone cannot authorize submission.
+- A local `eth_sendRawTransaction` mutates the local Anvil fork only. Keep `ARGUS_PRIVATE_RPC` pointed at the local node for a local dry run; do not point it at a public RPC if you intend to avoid live submission.
 
 ---
 
 ## Contracts
 
-```bash
-cd contracts
+```powershell
+Set-Location "C:\path\to\argus-evm\contracts"
 forge build
-# forge create src/VaultLiquidator.sol:VaultLiquidator --rpc-url $ETH_RPC_URL --private-key $PK
 ```
 
-Entry point (ABI locked with `argus-sim`):
+The current contract entry point is:
 
 ```solidity
 function executeLiquidation(
-    address flashLender,
-    address borrowToken,
-    uint256 borrowAmount,
-    address targetVault,
-    bytes calldata liquidationData,
-    uint256 minNetProfit
-) external onlyOwner;
+    MarketParams calldata mp,
+    address borrower,
+    uint256 seizedAssets,
+    uint256 repaidShares,
+    uint256 minNetProfit,
+    uint24 poolFee
+) external;
 ```
 
-Strict `InsufficientProfit` revert if residual < `minNetProfit`.
+Only the owner or an authorized operator can call it. The contract reverts with `InsufficientProfit` if the loan-token profit is below `minNetProfit`. Its constructor is `VaultLiquidator(address morpho_, address router_, uint24 defaultPoolFee_)`.
 
 ---
 
@@ -175,7 +220,7 @@ Strict `InsufficientProfit` revert if residual < `minNetProfit`.
 
 1. **New protocol** → `sol!` events in `argus-ingestor` + filter addresses
 2. **Live AlloyDB sim** → `WrapDatabaseAsync(AlloyDB::new(provider, block))` in `argus-sim`
-3. **Exact Morpho calldata** → encode `marketId, borrower, seizedAssets, repaidShares` into `liquidationData`
+3. **Exact Morpho calldata** → encode `MarketParams, borrower, seizedAssets, repaidShares` as the `VaultLiquidator.executeLiquidation` arguments
 4. **Multi-tx bundles** → approve + liquidate + swap as separate signed txs in `eth_sendBundle`
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full SSA mapping and latency budget.

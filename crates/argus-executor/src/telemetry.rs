@@ -5,8 +5,7 @@ use std::io::Write;
 use std::path::Path;
 
 use argus_types::{
-    ArgusError, ExecTick, ExecutionOutcome, Result, SimTick, SimulationResult,
-    TelemetryRecord,
+    ArgusError, ExecTick, ExecutionOutcome, Result, SimTick, SimulationResult, TelemetryRecord,
 };
 use chrono::Utc;
 use parking_lot::Mutex;
@@ -21,10 +20,7 @@ impl JsonlTelemetry {
         if let Some(parent) = Path::new(path).parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self {
             file: Mutex::new(file),
         })

@@ -112,7 +112,7 @@ async fn stream_new_heads(
             hash: header.hash,
             parent_hash: header.parent_hash,
             timestamp: header.timestamp,
-            base_fee_per_gas: header.base_fee_per_gas.map(Into::into),
+            base_fee_per_gas: header.base_fee_per_gas.map(alloy_primitives::U256::from),
         };
 
         let evt = DomainEvent::NewHead(NewHeadEvent {

@@ -1,41 +1,35 @@
 //! Core revm simulation of the atomic liquidation path.
 //!
 //! 1. Build calldata for `VaultLiquidator.executeLiquidation`
-//! 2. Warm `CacheDB` from Alloy at tip (balance/nonce/code for hot accounts)
-//! 3. `Evm::transact` fully in-memory — no RPC on the hot path
+//! 2. Use a provider-backed database to load fork state at a pinned tip
+//! 3. `Evm::transact` against a cached fork database
 
 use std::time::Instant;
 
-use alloy_primitives::{Address, Bytes, U256};
-use alloy_sol_types::{sol, SolCall};
-use argus_types::{LiquidationCandidate, Result, SimulationResult};
+use alloy::eips::BlockId;
+use alloy_primitives::{aliases::U24, U256};
+use alloy_sol_types::{sol, SolCall, SolEvent};
+use argus_types::{ArgusError, LiquidationCandidate, Result, SimulationResult};
 use chrono::Utc;
-use revm::database::{CacheDB, EmptyDB};
+use revm::db::CacheDB;
 use revm::primitives::{ExecutionResult, Output, SpecId, TxKind, U256 as RevmU256};
-use revm::Evm;
+use revm::{DatabaseRef, Evm};
 use tracing::{debug, info, warn};
 
+use crate::alloy_db::ProviderDb;
 use crate::config::SimConfig;
-use crate::alloy_db::{self, build_warm_db};
-use crate::fork::{self, ForkState};
-use crate::morpho_calldata::MorphoLiquidationData;
+use crate::fork::ForkState;
+use crate::morpho_calldata::{IVaultLiquidator, MorphoLiquidationData};
 
-// ABI must match contracts/src/VaultLiquidator.sol exactly.
 sol! {
-    interface IVaultLiquidator {
-        function executeLiquidation(
-            address flashLender,
-            address borrowToken,
-            uint256 borrowAmount,
-            address targetVault,
-            bytes liquidationData,
-            uint256 minNetProfit
-        ) external;
-    }
+    event LiquidationExecuted(
+        address indexed borrower,
+        address indexed loanToken,
+        address indexed collateralToken,
+        uint256 debtRepaid,
+        uint256 profit
+    );
 }
-
-/// Simulation caller (acts as owner of VaultLiquidator in the fork).
-const SIM_CALLER: Address = Address::new([0x01; 20]);
 
 pub struct Simulator {
     config: SimConfig,
@@ -46,70 +40,39 @@ impl Simulator {
         Self { config }
     }
 
-    /// Simulate one candidate. Target latency < 2 ms once the CacheDB is warm.
-    pub async fn simulate(
-        &self,
-        candidate: &LiquidationCandidate,
-    ) -> Result<SimulationResult> {
+    /// Simulate one candidate against live state pinned to the current tip.
+    pub async fn simulate(&self, candidate: &LiquidationCandidate) -> Result<SimulationResult> {
         let start = Instant::now();
 
         // Exact Morpho Blue liquidate params (seize-specified, repaidShares = 0).
         let morpho = MorphoLiquidationData::from_candidate_seize(candidate);
-        let liquidation_data = morpho.encode_liquidation_data();
-
-        // Morpho Blue core contract (singleton), not the market id.
-        let morpho_core = if !candidate.morpho.is_zero() {
-            candidate.morpho
-        } else {
-            self.config.morpho_blue
-        };
-
         let call = IVaultLiquidator::executeLiquidationCall {
-            flashLender: self.config.flash_loan_provider,
-            borrowToken: candidate.loan_token,
-            borrowAmount: candidate.debt_to_cover,
-            targetVault: morpho_core,
-            liquidationData: liquidation_data,
+            mp: morpho.market_params,
+            borrower: candidate.borrower,
+            seizedAssets: morpho.seized_assets,
+            repaidShares: morpho.repaid_shares,
             minNetProfit: self.config.min_profit,
+            poolFee: U24::ZERO,
         };
         let calldata = call.abi_encode();
 
         // ── Live fork at tip ───────────────────────────────────────────
         let fork = ForkState::fork_tip(&self.config.http_rpc_url).await?;
+        let provider = fork.provider().ok_or_else(|| {
+            ArgusError::provider(
+                "could not connect to RPC; refusing to simulate without live fork state",
+            )
+        })?;
         let overlay = fork.overlay();
 
-        // Accounts the liquidation path will touch.
-        let accounts = fork::liquidation_accounts(
-            self.config.liquidator,
-            self.config.flash_loan_provider,
-            candidate.borrower,
-            candidate.loan_token,
-            candidate.collateral_token,
-            morpho_core,
-            SIM_CALLER,
-        );
-
-        // Prefetch ERC-20 balance slots for liquidator / morpho / flash lender.
-        let storage = alloy_db::default_token_balance_slots(
-            &[candidate.loan_token, candidate.collateral_token],
-            &[
-                self.config.liquidator,
-                morpho_core,
-                self.config.flash_loan_provider,
-                SIM_CALLER,
-            ],
-        );
-
-        let mut cache_db = build_warm_db(&fork, &accounts, &storage).await?;
-
-        let (success, gas_used, net_profit_wei, failure_reason) = self
-            .run_revm(&fork, &mut cache_db, &calldata, candidate)
-            .await?;
+        let provider_db =
+            ProviderDb::new(provider.clone(), BlockId::Number(fork.block_number.into()))?;
+        let mut cache_db = CacheDB::new(provider_db);
+        let (success, gas_used, net_profit_wei, failure_reason) =
+            self.run_revm(&mut cache_db, fork.block_number, &calldata, candidate)?;
 
         let elapsed = start.elapsed();
         let gas_cost = self.config.gas_price.saturating_mul(U256::from(gas_used));
-        let flash_loan_fee = candidate.debt_to_cover / U256::from(2000u64); // ~5 bps placeholder
-
         let result = SimulationResult {
             candidate_id: candidate.id,
             candidate: candidate.clone(),
@@ -118,7 +81,7 @@ impl Simulator {
             min_profit: self.config.min_profit,
             gas_used,
             gas_cost,
-            flash_loan_fee,
+            flash_loan_fee: U256::ZERO,
             calldata,
             target: self.config.liquidator,
             fork_block: overlay.block_number,
@@ -138,29 +101,33 @@ impl Simulator {
         );
 
         if elapsed.as_millis() > 2 {
-            debug!(latency_ms = elapsed.as_millis(), "simulation exceeded 2ms target");
+            debug!(
+                latency_ms = elapsed.as_millis(),
+                "simulation exceeded 2ms target"
+            );
         }
 
         Ok(result)
     }
 
-    /// `Evm::transact` against a pre-warmed CacheDB (no state commit).
-    async fn run_revm(
+    /// `Evm::transact` against a lazy provider-backed fork at `block_number`.
+    fn run_revm<DB: DatabaseRef>(
         &self,
-        fork: &ForkState,
-        cache_db: &mut CacheDB<EmptyDB>,
+        cache_db: &mut CacheDB<DB>,
+        block_number: u64,
         calldata: &[u8],
         candidate: &LiquidationCandidate,
-    ) -> Result<(bool, u64, U256, Option<String>)> {
+    ) -> Result<(bool, u64, U256, Option<String>)>
+    where
+        DB::Error: std::fmt::Debug,
+    {
         if candidate.debt_to_cover.is_zero() {
             return Ok((false, 0, U256::ZERO, Some("zero debt_to_cover".into())));
         }
 
         debug!(
-            fork_block = fork.block_number,
-            live = fork.is_live(),
-            recipe = %fork.build_alloy_cache_db_recipe(),
-            "running Evm::transact on warmed CacheDB"
+            block_number,
+            "running Evm::transact against lazy provider-backed fork"
         );
 
         let to = self.config.liquidator;
@@ -170,14 +137,14 @@ impl Simulator {
                 .with_db(cache_db)
                 .with_spec_id(SpecId::CANCUN)
                 .modify_cfg_env(|cfg| {
-                    cfg.disable_eip3607 = true;
-                    cfg.disable_base_fee = true;
+                    cfg.chain_id = self.config.chain_id;
                 })
                 .modify_block_env(|block| {
-                    block.number = RevmU256::from(fork.block_number);
+                    block.number = RevmU256::from(block_number);
+                    block.basefee = RevmU256::ZERO;
                 })
                 .modify_tx_env(|tx| {
-                    tx.caller = SIM_CALLER;
+                    tx.caller = self.config.caller;
                     tx.transact_to = TxKind::Call(to);
                     tx.data = calldata.to_vec().into();
                     tx.value = RevmU256::ZERO;
@@ -192,15 +159,36 @@ impl Simulator {
         match transact_result {
             Ok(Ok(result_and_state)) => match result_and_state.result {
                 ExecutionResult::Success {
-                    output, gas_used, ..
+                    output,
+                    logs,
+                    gas_used,
+                    ..
                 } => {
-                    let net_profit = match output {
-                        Output::Call(data) if data.len() >= 32 => {
-                            U256::from_be_slice(&data[..32])
-                        }
-                        _ => candidate
-                            .estimated_profit
-                            .saturating_sub(self.config.min_profit / U256::from(2u64)),
+                    let net_profit = logs
+                        .iter()
+                        .filter(|log| {
+                            log.address == self.config.liquidator
+                                && log.data.topics().first()
+                                    == Some(&LiquidationExecuted::SIGNATURE_HASH)
+                        })
+                        .find_map(|log| {
+                            LiquidationExecuted::decode_log_data(&log.data, true)
+                                .ok()
+                                .map(|event| event.profit)
+                        });
+                    let Some(net_profit) = net_profit else {
+                        let output_bytes = match output {
+                            Output::Call(data) => data.len(),
+                            Output::Create(data, _) => data.len(),
+                        };
+                        return Ok((
+                            false,
+                            gas_used,
+                            U256::ZERO,
+                            Some(format!(
+                                "liquidation succeeded without LiquidationExecuted event (return data: {output_bytes} bytes)"
+                            )),
+                        ));
                     };
 
                     if net_profit >= self.config.min_profit {
@@ -230,18 +218,18 @@ impl Simulator {
                 )),
             },
             Ok(Err(e)) => {
-                warn!(error = %e, "Evm::transact error");
-                Ok((false, 0, U256::ZERO, Some(format!("evm error: {e}"))))
+                warn!(error = ?e, "Evm::transact error");
+                Ok((false, 0, U256::ZERO, Some(format!("evm error: {e:?}"))))
             }
-            Err(_panic) => {
-                warn!("Evm::transact panicked — falling back to economic estimate");
-                let rough = candidate.seize_assets / U256::from(10u64);
-                let gas_used = 350_000u64;
-                if rough >= self.config.min_profit {
-                    Ok((true, gas_used, rough, None))
-                } else {
-                    Ok((false, gas_used, rough, Some("below min_profit".into())))
-                }
+            Err(panic) => {
+                let detail = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown panic");
+                let message = format!("Evm::transact panicked: {detail}");
+                warn!(%message, "simulation failed");
+                Err(ArgusError::revm(message))
             }
         }
     }
@@ -258,9 +246,6 @@ fn decode_revert(output: &revm::primitives::Bytes) -> String {
     } else if output.is_empty() {
         "revert (empty)".into()
     } else {
-        format!(
-            "revert: 0x{}",
-            hex::encode(&output[..output.len().min(32)])
-        )
+        format!("revert: 0x{}", hex::encode(&output[..output.len().min(32)]))
     }
 }

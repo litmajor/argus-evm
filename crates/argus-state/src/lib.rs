@@ -6,8 +6,8 @@
 //! downstream via an mpsc channel when HF < 1.0.
 
 pub mod engine;
-pub mod store;
 pub mod health;
+pub mod store;
 
 use std::sync::Arc;
 
@@ -33,13 +33,24 @@ pub fn spawn(
     tokio::task::JoinHandle<Result<()>>,
 ) {
     let (candidate_tx, candidate_rx) = mpsc::channel(CANDIDATE_CHANNEL_CAPACITY);
+    let handle = spawn_with_candidate_sender(event_rx, shutdown, candidate_tx);
+    (candidate_rx, handle)
+}
+
+/// Spawn the state engine using a caller-provided candidate channel.
+///
+/// This lets startup discovery feed candidates into the same simulation
+/// pipeline as live state events.
+pub fn spawn_with_candidate_sender(
+    event_rx: broadcast::Receiver<DomainEvent>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+    candidate_tx: mpsc::Sender<LiquidationCandidate>,
+) -> tokio::task::JoinHandle<Result<()>> {
     let store = Arc::new(StateStore::new());
     let engine = StateEngine::new(store, candidate_tx);
 
-    let handle = tokio::spawn(async move {
+    tokio::spawn(async move {
         info!("argus-state engine starting");
         engine.run(event_rx, shutdown).await
-    });
-
-    (candidate_rx, handle)
+    })
 }
